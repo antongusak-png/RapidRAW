@@ -477,6 +477,7 @@ fn read_texture_data_roi(
     let (tx, rx) = std::sync::mpsc::channel();
     buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = tx.send(result);
+        });
             let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(45);
     let mut rx_res = None;
