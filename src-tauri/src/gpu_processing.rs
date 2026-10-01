@@ -32,7 +32,6 @@ fn poll_mapped_buffer(
                                                                                                                                                 }
                                                                                                                                                     Err(format!("GPU buffer map timed out after {:?}", start.elapsed()))
                                                                                                                                                     }
-)
 #[derive(Clone, Copy, Debug)]
 pub struct Roi {
     pub x: u32,
