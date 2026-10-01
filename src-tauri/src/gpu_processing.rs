@@ -12,7 +12,27 @@ use wgpu::util::{DeviceExt, TextureDataOrder};
 use crate::image_processing::{AllAdjustments, GpuContext, MAX_MASKS};
 use crate::lut_processing::Lut;
 use crate::{AppState, GpuImageCache};
-
+fn poll_mapped_buffer(
+        device: &wgpu::Device,
+            rx: &std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
+                timeout: std::time::Duration,
+                ) -> Result<(), String> {
+                    let start = std::time::Instant::now();
+                        while start.elapsed() < timeout {
+                                let _ = device.poll(wgpu::PollType::Poll);
+                                        match rx.try_recv() {
+                                                    Ok(result) => return result.map_err(|e| format!("GPU buffer map error: {:?}", e)),
+                                                                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                                                                                std::thread::sleep(std::time::Duration::from_millis(5));
+                                                                                            }
+                                                                                                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                                                                                                        return Err("GPU buffer map channel disconnected".to_string());
+                                                                                                                                    }
+                                                                                                                                            }
+                                                                                                                                                }
+                                                                                                                                                    Err(format!("GPU buffer map timed out after {:?}", start.elapsed()))
+                                                                                                                                                    }
+)
 #[derive(Clone, Copy, Debug)]
 pub struct Roi {
     pub x: u32,
@@ -478,31 +498,7 @@ fn read_texture_data_roi(
     buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = tx.send(result);
         });
-            let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(45);
-    let mut rx_res = None;
-
-    while start.elapsed() < timeout {
-        let _ = device.poll(wgpu::PollType::Poll);
-        match rx.try_recv() {
-            Ok(res) => {
-                rx_res = Some(res);
-                break;
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            Err(e) => {
-                return Err(format!("Failed receiving GPU map result: {}", e));
-            }
-        }
-    }
-
-    match rx_res {
-        Some(Ok(())) => {},
-        Some(Err(e)) => return Err(format!("GPU buffer map error: {:?}", e)),
-        None => return Err("Failed while polling mapped GPU buffer: Timed out waiting for GPU completion".to_string()),
-    }
+            poll_mapped_buffer(device, &rx, std::time::Duration::from_secs(10))?;
 
 
     let padded_data = buffer_slice.get_mapped_range().to_vec();
@@ -2079,40 +2075,35 @@ fn process_and_get_dynamic_image_inner(
                     let _ = tx.send(result);
                 });
 
-                if let Err(e) = device_clone.poll(wgpu::PollType::Wait {
-                    submission_index: None,
-                    timeout: Some(std::time::Duration::from_secs(60)),
-                }) {
-                    log::error!("Async analytics readback poll failed: {}", e);
+                if let Err(e) = poll_mapped_buffer(&device_clone, &rx, std::time::Duration::from_secs(10)) {
+                    log::error!("Async analytics readback poll failed: {:?}", e);
                     return;
                 }
 
-                if let Ok(Ok(())) = rx.recv() {
-                    let padded_data = buffer_slice.get_mapped_range().to_vec();
-                    output_buffer.unmap();
+                let padded_data = buffer_slice.get_mapped_range().to_vec();
+                output_buffer.unmap();
 
-                    let mut unpadded_data =
-                        Vec::with_capacity((unpadded_bytes_per_row * out_h) as usize);
-                    if padded_bytes_per_row == unpadded_bytes_per_row {
-                        unpadded_data = padded_data;
-                    } else {
-                        for chunk in padded_data.chunks(padded_bytes_per_row as usize) {
-                            unpadded_data
-                                .extend_from_slice(&chunk[..unpadded_bytes_per_row as usize]);
-                        }
+                let mut unpadded_data =
+                    Vec::with_capacity((unpadded_bytes_per_row * out_h) as usize);
+                if padded_bytes_per_row == unpadded_bytes_per_row {
+                    unpadded_data = padded_data;
+                } else {
+                    for chunk in padded_data.chunks(padded_bytes_per_row as usize) {
+                        unpadded_data
+                            .extend_from_slice(&chunk[..unpadded_bytes_per_row as usize]);
                     }
+                }
 
-                    if let Some(img_buf) =
-                        ImageBuffer::<Rgba<u8>, _>::from_raw(out_w, out_h, unpadded_data)
-                    {
-                        let dynamic_img = DynamicImage::ImageRgba8(img_buf);
-                        let _ = analytics.sender.send(crate::AnalyticsJob {
-                            path: analytics.path,
-                            image: std::sync::Arc::new(dynamic_img),
-                            compute_waveform: analytics.compute_waveform,
-                            active_waveform_channel: analytics.active_waveform_channel,
-                        });
-                    }
+                if let Some(img_buf) =
+                    ImageBuffer::<Rgba<u8>, _>::from_raw(out_w, out_h, unpadded_data)
+                {
+                    let dynamic_img = DynamicImage::ImageRgba8(img_buf);
+                    let _ = analytics.sender.send(crate::AnalyticsJob {
+                        path: analytics.path,
+                        image: std::sync::Arc::new(dynamic_img),
+                        compute_waveform: analytics.compute_waveform,
+                        active_waveform_channel: analytics.active_waveform_channel,
+                    });
                 }
             });
         } else {
