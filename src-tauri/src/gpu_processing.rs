@@ -477,17 +477,32 @@ fn read_texture_data_roi(
     let (tx, rx) = std::sync::mpsc::channel();
     buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = tx.send(result);
-    });
-    device
-        .poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: Some(std::time::Duration::from_secs(60)),
-        })
-        .map_err(|e| format!("Failed while polling mapped GPU buffer: {}", e))?;
-    let map_result = rx
-        .recv()
-        .map_err(|e| format!("Failed receiving GPU map result: {}", e))?;
-    map_result.map_err(|e| e.to_string())?;
+            let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(45);
+    let mut rx_res = None;
+
+    while start.elapsed() < timeout {
+        let _ = device.poll(wgpu::PollType::Poll);
+        match rx.try_recv() {
+            Ok(res) => {
+                rx_res = Some(res);
+                break;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(e) => {
+                return Err(format!("Failed receiving GPU map result: {}", e));
+            }
+        }
+    }
+
+    match rx_res {
+        Some(Ok(())) => {},
+        Some(Err(e)) => return Err(format!("GPU buffer map error: {:?}", e)),
+        None => return Err("Failed while polling mapped GPU buffer: Timed out waiting for GPU completion".to_string()),
+    }
+
 
     let padded_data = buffer_slice.get_mapped_range().to_vec();
     output_buffer.unmap();
