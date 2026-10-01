@@ -1,8 +1,10 @@
 name: 'Release: Build & Package App'
 
 on:
+  workflow_dispatch:
   release:
     types: [created]
+
 
 jobs:
   release:
