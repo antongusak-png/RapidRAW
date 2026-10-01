@@ -497,7 +497,7 @@ fn read_texture_data_roi(
     buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = tx.send(result);
         });
-            poll_mapped_buffer(device, &rx, std::time::Duration::from_secs(10))?;
+        poll_mapped_buffer(device, &rx, std::time::Duration::from_secs(60))?;
 
 
     let padded_data = buffer_slice.get_mapped_range().to_vec();
@@ -2074,7 +2074,7 @@ fn process_and_get_dynamic_image_inner(
                     let _ = tx.send(result);
                 });
 
-                if let Err(e) = poll_mapped_buffer(&device_clone, &rx, std::time::Duration::from_secs(10)) {
+                if let Err(e) = poll_mapped_buffer(&device_clone, &rx, std::time::Duration::from_secs(60)) {
                     log::error!("Async analytics readback poll failed: {:?}", e);
                     return;
                 }
